@@ -205,12 +205,20 @@ cleanup_broken_vpk_symlinks() {
 cleanup_daemon_mode() {
     [ "${SRCDS_STOP_UPDATE:-0}" -eq 1 ] || return 0
 
+    # SRCDS_STOP_UPDATE is also a standalone/panel switch. Only delete local
+    # SteamCMD state when this boot actually observed the daemon protocol.
+    if [ "${DAEMON_EVIDENCE_FOUND:-0}" != "1" ]; then
+        log_message "SRCDS_STOP_UPDATE=1 without daemon evidence - preserving local SteamCMD state" "warning"
+        return 0
+    fi
+
     # steamcmd/ is the big one (~200MB); Steam/ and steamapps/ are smaller leftovers
     # with no purpose in daemon mode (game files come from the shared CS2_DIR mount).
+    local container_root="${1:-/home/container}"
     local targets=(
-        /home/container/steamcmd
-        /home/container/Steam
-        /home/container/steamapps
+        "$container_root/steamcmd"
+        "$container_root/Steam"
+        "$container_root/steamapps"
     )
     local existing=()
     for t in "${targets[@]}"; do

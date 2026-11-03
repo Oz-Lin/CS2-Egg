@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+FROM ghcr.io/oz-lin/cs2-egg@sha256:5d85fec5eb12ce5575d917161c026af8c80a993360975df3c6480698371b461a
+
+ARG BUILD_REVISION
+
+LABEL org.opencontainers.image.source="https://github.com/Oz-Lin/CS2-Egg" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.base.name="ghcr.io/oz-lin/cs2-egg@sha256:5d85fec5eb12ce5575d917161c026af8c80a993360975df3c6480698371b461a" \
+      io.ozlin.cs2-egg.change="preserve-standalone-stop-update-state" \
+      io.ozlin.cs2-egg.base-digest="sha256:5d85fec5eb12ce5575d917161c026af8c80a993360975df3c6480698371b461a"
+
+USER root
+COPY --chmod=0555 docker/scripts/update_helper.sh /scripts/update_helper.sh
+USER container
