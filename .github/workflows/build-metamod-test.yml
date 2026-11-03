@@ -1,0 +1,164 @@
+name: Build MetaMod test image
+
+on:
+  push:
+    branches:
+      - codex/build-metamod-test-image
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cs2-test-metamod-3f2b11a-${{ github.repository }}-codex-build-metamod-test-image
+  cancel-in-progress: false
+
+jobs:
+  build-test-push:
+    if: github.repository == 'Oz-Lin/CS2-Egg' && github.ref == 'refs/heads/codex/build-metamod-test-image'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FIXED_COMMIT: 3f2b11aae6df9d1f69caf1012e099b8e750c231c
+      BASE_IMAGE: ghcr.io/k4ryuu/cs2-egg@sha256:79a39deaf1a0f9c7b517ac4e877902d4022878691b2e83f57bb8a8bc181b5ebf
+      IMAGE_TAG: ghcr.io/oz-lin/cs2-egg:test-metamod-3f2b11a
+
+    steps:
+      - name: Check out exact branch revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Guard repository, branch, source commit, and fixed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "Oz-Lin/CS2-Egg"
+          test "$GITHUB_REF" = "refs/heads/codex/build-metamod-test-image"
+          git merge-base --is-ancestor "$FIXED_COMMIT" HEAD
+          git diff --exit-code "$FIXED_COMMIT" HEAD -- \
+            docker/scripts/updaters/metamod.sh \
+            docker/utils/updater_common.sh \
+            misc/tests/updater-common-test.sh \
+            misc/tests/metamod-updater-test.sh
+
+      - name: Run static and isolated updater tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in \
+            docker/scripts/updaters/metamod.sh \
+            docker/utils/updater_common.sh \
+            misc/tests/updater-common-test.sh \
+            misc/tests/metamod-updater-test.sh
+          do
+            bash -n "$script"
+          done
+          bash misc/tests/updater-common-test.sh
+          bash misc/tests/metamod-updater-test.sh
+          git diff --check "$FIXED_COMMIT" HEAD --
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite the immutable test tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if inspect_output=$(docker manifest inspect "$IMAGE_TAG" 2>&1); then
+            echo "Refusing to overwrite existing image tag: $IMAGE_TAG" >&2
+            exit 1
+          fi
+          case "$inspect_output" in
+            *"manifest unknown"*|*"no such manifest"*)
+              echo "Confirmed unused image tag: $IMAGE_TAG"
+              ;;
+            *)
+              echo "Could not safely confirm that the image tag is unused:" >&2
+              echo "$inspect_output" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build linux/amd64 derivative
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build \
+            --platform linux/amd64 \
+            --build-arg "BUILD_REVISION=$GITHUB_SHA" \
+            --file docker/KitsuneLab-Test-Dockerfile \
+            --tag "$IMAGE_TAG" \
+            .
+
+      - name: Smoke-check image and run offline tests inside it
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE_TAG")" = "container"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "$IMAGE_TAG")" = "https://github.com/Oz-Lin/CS2-Egg"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE_TAG")" = "$GITHUB_SHA"
+          test "$(docker image inspect --format '{{index .Config.Labels "io.ozlin.cs2-egg.fixed-source-commit"}}' "$IMAGE_TAG")" = "$FIXED_COMMIT"
+          test "$(docker image inspect --format '{{index .Config.Labels "io.ozlin.cs2-egg.base-digest"}}' "$IMAGE_TAG")" = "${BASE_IMAGE#*@}"
+
+          expected_metamod=$(sha256sum docker/scripts/updaters/metamod.sh | awk '{print $1}')
+          expected_common=$(sha256sum docker/utils/updater_common.sh | awk '{print $1}')
+          actual_metamod=$(docker run --rm --network none --platform linux/amd64 \
+            --entrypoint sha256sum "$IMAGE_TAG" /scripts/updaters/metamod.sh | awk '{print $1}')
+          actual_common=$(docker run --rm --network none --platform linux/amd64 \
+            --entrypoint sha256sum "$IMAGE_TAG" /utils/updater_common.sh | awk '{print $1}')
+          test "$actual_metamod" = "$expected_metamod"
+          test "$actual_common" = "$expected_common"
+
+          docker run --rm --network none --platform linux/amd64 \
+            --entrypoint /bin/bash "$IMAGE_TAG" -lc 'bash --version | head -n1; jq --version'
+
+          docker run --rm --network none --platform linux/amd64 \
+            --volume "$GITHUB_WORKSPACE:/source:ro" \
+            --tmpfs /tmp:rw,exec,nosuid,size=128m \
+            --workdir /source \
+            --entrypoint /bin/bash \
+            "$IMAGE_TAG" -lc \
+            'bash misc/tests/updater-common-test.sh && bash misc/tests/metamod-updater-test.sh'
+
+      - name: Push exact test tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_TAG"
+
+      - name: Emit pushed digest and provenance summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$IMAGE_TAG"
+          repo_digests=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE_TAG")
+          manifest_digest=$(printf '%s\n' "$repo_digests" | awk -F@ '$1 == "ghcr.io/oz-lin/cs2-egg" {print $2; exit}')
+          test -n "$manifest_digest"
+
+          metamod_sha=$(sha256sum docker/scripts/updaters/metamod.sh | awk '{print $1}')
+          common_sha=$(sha256sum docker/utils/updater_common.sh | awk '{print $1}')
+          {
+            echo "### MetaMod test image"
+            echo ""
+            echo "- Tag: \`$IMAGE_TAG\`"
+            echo "- Manifest digest: \`$manifest_digest\`"
+            echo "- Build revision: \`$GITHUB_SHA\`"
+            echo "- Fixed source commit: \`$FIXED_COMMIT\`"
+            echo "- Base image: \`$BASE_IMAGE\`"
+            echo "- Platform: \`linux/amd64\`"
+            echo "- MetaMod updater SHA-256: \`$metamod_sha\`"
+            echo "- Common helper SHA-256: \`$common_sha\`"
+            echo "- Validation: host static tests and offline in-image suites passed"
+            echo ""
+            echo "RepoDigests:"
+            echo '```text'
+            printf '%s\n' "$repo_digests"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
