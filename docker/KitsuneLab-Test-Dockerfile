@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+FROM ghcr.io/k4ryuu/cs2-egg@sha256:79a39deaf1a0f9c7b517ac4e877902d4022878691b2e83f57bb8a8bc181b5ebf
+
+ARG BUILD_REVISION
+
+LABEL org.opencontainers.image.source="https://github.com/Oz-Lin/CS2-Egg" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.base.name="ghcr.io/k4ryuu/cs2-egg@sha256:79a39deaf1a0f9c7b517ac4e877902d4022878691b2e83f57bb8a8bc181b5ebf" \
+      io.ozlin.cs2-egg.fixed-source-commit="3f2b11aae6df9d1f69caf1012e099b8e750c231c" \
+      io.ozlin.cs2-egg.base-digest="sha256:79a39deaf1a0f9c7b517ac4e877902d4022878691b2e83f57bb8a8bc181b5ebf"
+
+USER root
+COPY --chmod=0555 docker/scripts/updaters/metamod.sh /scripts/updaters/metamod.sh
+COPY --chmod=0555 docker/utils/updater_common.sh /utils/updater_common.sh
+USER container
