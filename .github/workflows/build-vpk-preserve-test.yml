@@ -1,0 +1,63 @@
+name: Build VPK preserve test image
+on:
+  push:
+    branches: [codex/vpk-preserve-helper]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: cs2-vpk-preserve-test-20261103a
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'Oz-Lin/CS2-Egg' && github.ref == 'refs/heads/codex/vpk-preserve-helper'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      IMAGE_TAG: ghcr.io/oz-lin/cs2-egg:test-vpk-preserve-20261103a
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Validate frozen source and run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'a7475e940b5543684a30179c1eb776e2f7bc1b77ba7617dca859d2d29772faa7  docker/scripts/update_helper.sh' | sha256sum -c -
+          echo '0c5eecab1e55a67a12e33c208aae5c37ccaf0e227393e071ce4f903a22930441  misc/tests/cleanup-preserve-test.sh' | sha256sum -c -
+          echo 'dbd4070612df4690ed38b560d91d964f26621361ecf16b6198a531b6081efa31  docker/KitsuneLab-VPK-Preserve-Dockerfile' | sha256sum -c -
+          bash -n docker/scripts/update_helper.sh
+          bash -n misc/tests/cleanup-preserve-test.sh
+          bash -n misc/tests/protocol-test.sh
+          bash misc/tests/cleanup-preserve-test.sh
+          bash misc/tests/protocol-test.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if out=$(docker manifest inspect "$IMAGE_TAG" 2>&1); then
+            echo 'Tag already exists' >&2; exit 1
+          fi
+          case "$out" in *'manifest unknown'*|*'no such manifest'*) ;; *) echo "$out" >&2; exit 1 ;; esac
+      - name: Build and inspect image
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build --platform linux/amd64 --build-arg "BUILD_REVISION=$GITHUB_SHA" -f docker/KitsuneLab-VPK-Preserve-Dockerfile -t "$IMAGE_TAG" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE_TAG")" = container
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE_TAG")" = "$GITHUB_SHA"
+          expected=$(sha256sum docker/scripts/update_helper.sh | awk '{print $1}')
+          actual=$(docker run --rm --network none --platform linux/amd64 --user 998:998 --entrypoint sha256sum "$IMAGE_TAG" /scripts/update_helper.sh | awk '{print $1}')
+          test "$expected" = "$actual"
+          docker run --rm --network none --platform linux/amd64 --user 998:998 --volume "$GITHUB_WORKSPACE:/source:ro" --tmpfs /tmp:rw,exec,nosuid,size=128m --workdir /source --entrypoint /bin/bash "$IMAGE_TAG" -lc 'bash misc/tests/cleanup-preserve-test.sh'
+      - name: Push and report digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_TAG"
+          docker pull --platform linux/amd64 "$IMAGE_TAG"
+          docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE_TAG" | tee -a "$GITHUB_STEP_SUMMARY"
